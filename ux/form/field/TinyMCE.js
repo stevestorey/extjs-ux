@@ -20,36 +20,22 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
     },
 
     hideBorder: false,
-
     inProgress: false,
-
     lastWidth: 0,
-
     lastHeight: 0,
 
     statics: {
         tinyMCEInitialized: false,
         globalSettings: {
-            accessibility_focus: false,
-            language: "en",
-            mode: "exact",
-            skin: "extjs",
-            theme: "advanced",
-            plugins: 'autolink,lists,spellchecker,pagebreak,style,layer,table,save,advhr,advimage,advlink,emotions,iespell,inlinepopups,insertdatetime,preview,media,searchreplace,print,contextmenu,paste,directionality,fullscreen,noneditable,visualchars,nonbreaking,xhtmlxtras,template',
-            theme_advanced_buttons1: 'newdocument,|,bold,italic,underline,strikethrough,|,justifyleft,justifycenter,justifyright,justifyfull,|,styleselect,formatselect,fontselect,fontsizeselect',
-            theme_advanced_buttons2: 'cut,copy,paste,pastetext,pasteword,|,search,replace,|,bullist,numlist,|,outdent,indent,blockquote,|,undo,redo,|,link,unlink,anchor,image,cleanup,help,code,|,insertdate,inserttime,preview,|,forecolor,backcolor',
-            theme_advanced_buttons3: 'tablecontrols,|,hr,removeformat,visualaid,|,sub,sup,|,charmap,emotions,iespell,media,advhr,|,print,|,ltr,rtl,|,fullscreen',
-            theme_advanced_buttons4: 'insertlayer,moveforward,movebackward,absolute,|,styleprops,spellchecker,|,cite,abbr,acronym,del,ins,attribs,|,visualchars,nonbreaking,template,blockquote,pagebreak',
-            // extended_valid_elements:
-            // "a[name|href|target|title|onclick],img[class|src|border=0|alt|title|hspace|vspace|width|height|align|onmouseover|onmouseout|name],hr[class|width|size|noshade],font[face|size|color|style],span[class|align|style]",
-            // template_external_list_url:
-            // "example_template_list.js"
-            // content_css : "/lib/css/editor.css",
-            theme_advanced_toolbar_location: 'top',
-            theme_advanced_toolbar_align: 'left',
-            theme_advanced_statusbar_location: 'bottom',
-            theme_advanced_resize_horizontal: false,
-            theme_advanced_resizing: false,
+            theme: "modern",
+            plugins: [
+                "advlist autolink lists link image charmap print preview hr anchor pagebreak",
+                "searchreplace wordcount visualblocks visualchars code fullscreen",
+                "insertdatetime nonbreaking save table contextmenu directionality",
+                "paste textcolor"
+            ],
+            toolbar1: "insertfile undo redo | styleselect | bold italic forecolor backcolor | alignleft aligncenter alignright alignjustify | bullist numlist outdent indent | link image | preview",
+            image_advtab: true,
             width: '100%'
         },
 
@@ -66,7 +52,8 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
         Ext.applyIf(config.tinymceConfig, me.statics().globalSettings);
 
         me.addEvents({
-            "editorcreated": true
+            "editorcreated": true,
+            "editorcontentchanged": true
         });
 
         me.callParent([config]);
@@ -84,7 +71,6 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
 
             me.lastWidth = width;
             me.lastHeight = (!me.editor) ? me.inputEl.getHeight() : height;
-            //me.lastHeight = height;
 
             if (!me.editor)
                 me.initEditor();
@@ -105,40 +91,43 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
         // Init values we do not want changed
         me.tinymceConfig.elements = me.getInputId();
         me.tinymceConfig.mode = 'exact';
-
-        me.tinymceConfig.height = me.lastHeight - 5;
-        //me.tinymceConfig.height = me.inputEl.getHeight() - 5;
+        if (!!me.initialConfig.readOnly) {
+            me.tinymceConfig.statusbar = false;
+            me.tinymceConfig.toolbar = false;
+            me.tinymceConfig.menubar = false;
+            me.tinymceConfig.readonly = true;
+        }
+        me.tinymceConfig.height = me.inputEl.getHeight() - 5;
 
         me.tinymceConfig.setup = function(editor) {
-            editor.onInit.add(function(editor) {
+            editor.on('init', function(e) {
                 me.inProgress = false;
             });
-
-            editor.onKeyPress.add(Ext.Function.createBuffered(me.validate, 250, me));
-
-            editor.onPostRender.add(function(editor) {
+            editor.on('keypress', Ext.Function.createBuffered(me.validate, 250, me));
+            editor.on('change', function(e) {
+                me.fireEvent("editorcontentchanged", editor);
+            });
+            editor.on('PostRender', function(e) {
                 me.editor = editor;
                 window.b = me.editor;
+                window.d = me;
 
-                editor.windowManager = new Ext.ux.form.field.TinyMCEWindowManager({
+                /*editor.windowManager = new Ext.ux.form.field.TinyMCEWindowManager({
                     editor: me.editor
-                });
+                });*/
 
-                me.tableEl = Ext.get(me.editor.id + "_tbl");
+                me.tableEl = Ext.get(editor.getContainer());//Ext.get(me.editor.id + "_tbl");
                 me.iframeEl = Ext.get(me.editor.id + "_ifr");
 
-                me.edToolbar = me.tableEl.down(".mceToolbar");
-                me.edStatusbar = me.tableEl.down(".mceStatusbar");
+                me.edMenubar = me.tableEl.down(".mce-menubar");
+                me.edToolbar = me.tableEl.down(".mce-toolbar");
+                me.edStatusbar = me.tableEl.down(".mce-statusbar");
 
-                if (me.hideBorder)
-                    me.tableEl.setStyle('border', '0px');
+                /*if (me.hideBorder)
+                    me.tableEl.setStyle('border', '0px');*/
 
                 Ext.Function.defer(function() {
-
-                    if (me.tableEl.getHeight() != me.lastHeight - 5)
-                        me.setEditorSize(me.lastWidth, me.lastHeight);
-
-                    //me.setEditorSize(me.lastWidth, (me.tableEl.getHeight() != me.lastHeight - 2) ? me.tableEl.getHeight() : me.lastHeight);
+                    me.setEditorSize(me.lastWidth, me.lastHeight);
                 }, 10, me);
 
                 me.fireEvent('editorcreated', me.editor, me);
@@ -152,8 +141,16 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
         var me = this,
             frameHeight = height - 2;
 
-        if (!me.editor || !me.rendered)
+        if (!me.editor || !me.rendered || me.edMenubar.getHeight() > 100) {
+            //Go around again, we're not quite ready yet
+            Ext.Function.defer(function() {
+                me.setEditorSize(width, height);
+            }, 10, me);
             return;
+        }
+
+        if (me.edMenubar)
+            frameHeight -= me.edMenubar.getHeight();
 
         if (me.edToolbar)
             frameHeight -= me.edToolbar.getHeight();
@@ -161,11 +158,7 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
         if (me.edStatusbar)
             frameHeight -= me.edStatusbar.getHeight();
 
-        //console.log(me.edToolbar);
         me.iframeEl.setHeight(frameHeight);
-
-        //me.tableEl.setWidth(width);
-        me.tableEl.setHeight(height);
         me.inputEl.setHeight(height);
     },
 
@@ -290,7 +283,7 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
             func.call(me);
         // Else if editor is created but not initialized yet.
         else
-            me.editor.onInit.add(Ext.Function.bind(function() {
+            me.editor.on("init", Ext.Function.bind(function() {
                 Ext.Function.defer(func, 10, me);
             }, me));
     },
