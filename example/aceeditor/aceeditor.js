@@ -1,7 +1,7 @@
 Ext.Loader.setConfig({
     enabled: true,
     paths: {
-        'Ext.ux': 'http://extjs.cachefly.net/extjs-4.1.1-gpl/examples/ux/statusbar',
+        'Ext.ux': 'http://cdn.sencha.com/ext/gpl/4.2.1/examples/ux/statusbar',
         'Ext.ux.aceeditor': '../../ux/aceeditor'
     }
 });
