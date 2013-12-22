@@ -28,25 +28,34 @@ define("tinymce/ui/ElementPath", [
 		postRender: function() {
 			var self = this, editor = EditorManager.activeEditor;
 
-			function isBogus(elm) {
-				return elm.nodeType === 1 && (elm.nodeName == "BR" || !!elm.getAttribute('data-mce-bogus'));
+			function isHidden(elm) {
+				if (elm.nodeType === 1) {
+					if (elm.nodeName == "BR" || !!elm.getAttribute('data-mce-bogus')) {
+						return true;
+					}
+
+					if (elm.getAttribute('data-mce-type') === 'bookmark') {
+						return true;
+					}
+				}
+
+				return false;
 			}
 
 			self.on('select', function(e) {
-				var parents = [], node = editor.selection.getNode(), body = editor.getBody();
+				var parents = [], node, body = editor.getBody();
 
-				while (node) {
-					if (!isBogus(node)) {
+				editor.focus();
+
+				node = editor.selection.getStart();
+				while (node && node != body) {
+					if (!isHidden(node)) {
 						parents.push(node);
 					}
 
 					node = node.parentNode;
-					if (node == body) {
-						break;
-					}
 				}
 
-				editor.focus();
 				editor.selection.select(parents[parents.length - 1 - e.index]);
 				editor.nodeChanged();
 			});
@@ -55,7 +64,7 @@ define("tinymce/ui/ElementPath", [
 				var parents = [], selectionParents = e.parents, i = selectionParents.length;
 
 				while (i--) {
-					if (selectionParents[i].nodeType == 1 && !isBogus(selectionParents[i])) {
+					if (selectionParents[i].nodeType == 1 && !isHidden(selectionParents[i])) {
 						var args = editor.fire('ResolveName', {
 							name: selectionParents[i].nodeName.toLowerCase(),
 							target: selectionParents[i]

@@ -319,6 +319,7 @@ define("tinymce/html/DomParser", [
 						if (!rootBlockNode) {
 							// Create a new root block element
 							rootBlockNode = createNode(rootBlockName, 1);
+							rootBlockNode.attr(settings.forced_root_block_attrs);
 							rootNode.insert(rootBlockNode, node);
 							rootBlockNode.append(node);
 						} else {
@@ -382,6 +383,8 @@ define("tinymce/html/DomParser", [
 
 			parser = new SaxParser({
 				validate: validate,
+				allow_script_urls: settings.allow_script_urls,
+				allow_conditional_comments: settings.allow_conditional_comments,
 
 				// Exclude P and LI from DOM parsing since it's treated better by the DOM parser
 				self_closing_elements: cloneAndExcludeBlocks(schema.getSelfClosingElements()),
@@ -708,7 +711,7 @@ define("tinymce/html/DomParser", [
 						// Replaces BR elements inside inline elements like <p><b><i><br></i></b></p>
 						// so they become <p><b><i>&nbsp;</i></b></p>
 						lastParent = node;
-						while (parent.firstChild === lastParent && parent.lastChild === lastParent) {
+						while (parent && parent.firstChild === lastParent && parent.lastChild === lastParent) {
 							lastParent = parent;
 
 							if (blockElements[parent.name]) {

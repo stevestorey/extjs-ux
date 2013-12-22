@@ -16,7 +16,7 @@ tinymce.ThemeManager.add('modern', function(editor) {
 	// Default menus
 	var defaultMenus = {
 		file: {title: 'File', items: 'newdocument'},
-		edit: {title: 'Edit', items: 'undo redo | cut copy paste | selectall'},
+		edit: {title: 'Edit', items: 'undo redo | cut copy paste pastetext | selectall'},
 		insert: {title: 'Insert', items: '|'},
 		view: {title: 'View', items: 'visualaid |'},
 		format: {title: 'Format', items: 'bold italic underline strikethrough superscript subscript | formats | removeformat'},
@@ -59,7 +59,7 @@ tinymce.ThemeManager.add('modern', function(editor) {
 								}
 							}
 
-							item.active(nodeName == "UL");
+							item.active(state && nodeName == "UL");
 						});
 					}
 
@@ -74,7 +74,7 @@ tinymce.ThemeManager.add('modern', function(editor) {
 								}
 							}
 
-							item.active(nodeName == "OL");
+							item.active(state && nodeName == "OL");
 						});
 					}
 
@@ -110,8 +110,14 @@ tinymce.ThemeManager.add('modern', function(editor) {
 						}
 
 						if (editor.buttons[item]) {
+							// TODO: Move control creation to some UI class
 							itemName = item;
 							item = editor.buttons[itemName];
+
+							if (typeof(item) == "function") {
+								item = item();
+							}
+
 							item.type = item.type || 'button';
 
 							if (settings.toolbar_items_size) {
@@ -247,7 +253,7 @@ tinymce.ThemeManager.add('modern', function(editor) {
 			}
 		}
 
-		var enabledMenuNames = settings.menubar ? settings.menubar.split(/[ ,]/) : defaultMenuBar;
+		var enabledMenuNames = typeof(settings.menubar) == "string" ? settings.menubar.split(/[ ,]/) : defaultMenuBar;
 		for (var i = 0; i < enabledMenuNames.length; i++) {
 			var menu = enabledMenuNames[i];
 			menu = createMenu(menu);
@@ -309,13 +315,16 @@ tinymce.ThemeManager.add('modern', function(editor) {
 		containerSize = getSize(containerElm);
 		iframeSize = getSize(iframeElm);
 
-		width = Math.max(settings.min_width || 100, width);
-		height = Math.max(settings.min_height || 100, height);
-		width = Math.min(settings.max_width || 0xFFFF, width);
-		height = Math.min(settings.max_height || 0xFFFF, height);
+		if (width !== null) {
+			width = Math.max(settings.min_width || 100, width);
+			width = Math.min(settings.max_width || 0xFFFF, width);
 
-		DOM.css(containerElm, 'width', width + (containerSize.width - iframeSize.width));
-		DOM.css(iframeElm, 'width', width);
+			DOM.css(containerElm, 'width', width + (containerSize.width - iframeSize.width));
+			DOM.css(iframeElm, 'width', width);
+		}
+
+		height = Math.max(settings.min_height || 100, height);
+		height = Math.min(settings.max_height || 0xFFFF, height);
 		DOM.css(iframeElm, 'height', height);
 
 		editor.fire('ResizeEditor');
@@ -340,7 +349,18 @@ tinymce.ThemeManager.add('modern', function(editor) {
 
 		function reposition() {
 			if (panel && panel.moveRel && panel.visible() && !panel._fixed) {
-				panel.moveRel(editor.getBody(), ['tl-bl', 'bl-tl']);
+				// TODO: This is kind of ugly and doesn't handle multiple scrollable elements
+				var scrollContainer = editor.selection.getScrollContainer(), body = editor.getBody();
+				var deltaX = 0, deltaY = 0;
+
+				if (scrollContainer) {
+					var bodyPos = DOM.getPos(body), scrollContainerPos = DOM.getPos(scrollContainer);
+
+					deltaX = Math.max(0, scrollContainerPos.x - bodyPos.x);
+					deltaY = Math.max(0, scrollContainerPos.y - bodyPos.y);
+				}
+
+				panel.fixed(false).moveRel(body, editor.rtl ? ['tr-br', 'br-tr'] : ['tl-bl', 'bl-tl']).moveBy(deltaX, deltaY);
 			}
 		}
 
@@ -356,10 +376,6 @@ tinymce.ThemeManager.add('modern', function(editor) {
 			if (panel) {
 				panel.hide();
 				DOM.removeClass(editor.getBody(), 'mce-edit-focus');
-
-				if (document.activeElement && document.activeElement.className.indexOf('mce-content-body') == -1) {
-					DOM.setStyle(document.body, 'padding-top', 0);
-				}
 			}
 		}
 
@@ -378,13 +394,16 @@ tinymce.ThemeManager.add('modern', function(editor) {
 				classes: 'tinymce tinymce-inline',
 				layout: 'flex',
 				direction: 'column',
+				align: 'stretch',
 				autohide: false,
 				autofix: true,
 				fixed: !!inlineToolbarContainer,
 				border: 1,
 				items: [
 					settings.menubar === false ? null : {type: 'menubar', border: '0 0 1 0', items: createMenuButtons()},
-					settings.toolbar === false ? null : {type: 'panel', name: 'toolbar', layout: 'stack', items: createToolbars()}
+					settings.toolbar === false ? null : {
+						type: 'panel', layout: 'stack', classes: "toolbar-grp", items: createToolbars()
+					}
 				]
 			});
 
@@ -395,6 +414,7 @@ tinymce.ThemeManager.add('modern', function(editor) {
 				]});
 			}*/
 
+			editor.fire('BeforeRenderUI');
 			panel.renderTo(inlineToolbarContainer || document.body).reflow();
 
 			addAccessibilityKeys(panel);
@@ -439,7 +459,7 @@ tinymce.ThemeManager.add('modern', function(editor) {
 			border: 1,
 			items: [
 				settings.menubar === false ? null : {type: 'menubar', border: '0 0 1 0', items: createMenuButtons()},
-				settings.toolbar === false ? null : {type: 'panel', layout: 'stack', items: createToolbars()},
+				settings.toolbar === false ? null : {type: 'panel', layout: 'stack', classes: "toolbar-grp", items: createToolbars()},
 				{type: 'panel', name: 'iframe', layout: 'stack', classes: 'edit-area', html: '', border: '1 0 0 0'}
 			]
 		});
@@ -459,7 +479,11 @@ tinymce.ThemeManager.add('modern', function(editor) {
 				},
 
 				onResize: function(e) {
-					resizeTo(startSize.width + e.deltaX, startSize.height + e.deltaY);
+					if (settings.resize == 'both') {
+						resizeTo(startSize.width + e.deltaX, startSize.height + e.deltaY);
+					} else {
+						resizeTo(null, startSize.height + e.deltaY);
+					}
 				}
 			};
 		}
@@ -472,7 +496,11 @@ tinymce.ThemeManager.add('modern', function(editor) {
 			]});
 		}
 
-		// Render before the target textarea/div
+		if (settings.readonly) {
+			panel.find('*').disabled(true);
+		}
+
+		editor.fire('BeforeRenderUI');
 		panel.renderBefore(args.targetNode).reflow();
 
 		if (settings.width) {
@@ -504,16 +532,24 @@ tinymce.ThemeManager.add('modern', function(editor) {
 		var skin = settings.skin !== false ? settings.skin || 'lightgray' : false;
 
 		if (skin) {
+			var skinUrl = settings.skin_url;
+
+			if (skinUrl) {
+				skinUrl = editor.documentBaseURI.toAbsolute(skinUrl);
+			} else {
+				skinUrl = tinymce.baseURL + '/skins/' + skin;
+			}
+
 			// Load special skin for IE7
 			// TODO: Remove this when we drop IE7 support
 			if (tinymce.Env.documentMode <= 7) {
-				tinymce.DOM.loadCSS(tinymce.baseURL + '/skins/' + skin + '/skin.ie7.min.css');
+				tinymce.DOM.loadCSS(skinUrl + '/skin.ie7.min.css');
 			} else {
-				tinymce.DOM.loadCSS(tinymce.baseURL + '/skins/' + skin + '/skin.min.css');
+				tinymce.DOM.loadCSS(skinUrl + '/skin.min.css');
 			}
 
 			// Load content.min.css or content.inline.min.css
-			editor.contentCSS.push(tinymce.baseURL + '/skins/' + skin + '/content' + (editor.inline ? '.inline' : '') + '.min.css');
+			editor.contentCSS.push(skinUrl + '/content' + (editor.inline ? '.inline' : '') + '.min.css');
 		}
 
 		// Handle editor setProgressState change

@@ -11,6 +11,33 @@
 /*global tinymce:true */
 
 tinymce.PluginManager.add('image', function(editor) {
+	function getImageSize(url, callback) {
+		var img = document.createElement('img');
+
+		function done(width, height) {
+			img.parentNode.removeChild(img);
+			callback({width: width, height: height});
+		}
+
+		img.onload = function() {
+			done(img.clientWidth, img.clientHeight);
+		};
+
+		img.onerror = function() {
+			done();
+		};
+
+		img.src = url;
+
+		var style = img.style;
+		style.visibility = 'hidden';
+		style.position = 'fixed';
+		style.bottom = style.left = 0;
+		style.width = style.height = 'auto';
+
+		document.body.appendChild(img);
+	}
+
 	function createImageList(callback) {
 		return function() {
 			var imageList = editor.settings.image_list;
@@ -29,21 +56,21 @@ tinymce.PluginManager.add('image', function(editor) {
 	}
 
 	function showDialog(imageList) {
-		var win, data, dom = editor.dom, imgElm = editor.selection.getNode();
+		var win, data = {}, dom = editor.dom, imgElm = editor.selection.getNode();
 		var width, height, imageListCtrl;
 
 		function buildImageList() {
-			var linkImageItems = [{text: 'None', value: ''}];
+			var imageListItems = [{text: 'None', value: ''}];
 
-			tinymce.each(imageList, function(link) {
-				linkImageItems.push({
-					text: link.text || link.title,
-					value: link.value || link.url,
-					menu: link.menu
+			tinymce.each(imageList, function(image) {
+				imageListItems.push({
+					text: image.text || image.title,
+					value: editor.convertURL(image.value || image.url, 'src'),
+					menu: image.menu
 				});
 			});
 
-			return linkImageItems;
+			return imageListItems;
 		}
 
 		function recalcSize(e) {
@@ -71,11 +98,24 @@ tinymce.PluginManager.add('image', function(editor) {
 
 		function onSubmitForm() {
 			function waitLoad(imgElm) {
-				imgElm.onload = imgElm.onerror = function() {
+				function selectImage() {
 					imgElm.onload = imgElm.onerror = null;
 					editor.selection.select(imgElm);
 					editor.nodeChanged();
+				}
+
+				imgElm.onload = function() {
+					if (!data.width && !data.height) {
+						dom.setAttribs(imgElm, {
+							width: imgElm.clientWidth,
+							height: imgElm.clientHeight
+						});
+					}
+
+					selectImage();
 				};
+
+				imgElm.onerror = selectImage;
 			}
 
 			var data = win.toJSON();
@@ -100,16 +140,27 @@ tinymce.PluginManager.add('image', function(editor) {
 				style: data.style
 			};
 
-			if (!imgElm) {
-				data.id = '__mcenew';
-				editor.insertContent(dom.createHTML('img', data));
-				imgElm = dom.get('__mcenew');
-				dom.setAttrib(imgElm, 'id', null);
-			} else {
-				dom.setAttribs(imgElm, data);
-			}
+			editor.undoManager.transact(function() {
+				if (!data.src) {
+					if (imgElm) {
+						dom.remove(imgElm);
+						editor.nodeChanged();
+					}
 
-			waitLoad(imgElm);
+					return;
+				}
+
+				if (!imgElm) {
+					data.id = '__mcenew';
+					editor.selection.setContent(dom.createHTML('img', data));
+					imgElm = dom.get('__mcenew');
+					dom.setAttrib(imgElm, 'id', null);
+				} else {
+					dom.setAttribs(imgElm, data);
+				}
+
+				waitLoad(imgElm);
+			});
 		}
 
 		function removePixelSuffix(value) {
@@ -120,10 +171,26 @@ tinymce.PluginManager.add('image', function(editor) {
 			return value;
 		}
 
+		function srcChange() {
+			if (imageListCtrl) {
+				imageListCtrl.value(editor.convertURL(this.value(), 'src'));
+			}
+
+			getImageSize(this.value(), function(data) {
+				if (data.width && data.height) {
+					width = data.width;
+					height = data.height;
+
+					win.find('#width').value(width);
+					win.find('#height').value(height);
+				}
+			});
+		}
+
 		width = dom.getAttrib(imgElm, 'width');
 		height = dom.getAttrib(imgElm, 'height');
 
-		if (imgElm.nodeName == 'IMG' && !imgElm.getAttribute('data-mce-object')) {
+		if (imgElm.nodeName == 'IMG' && !imgElm.getAttribute('data-mce-object') && !imgElm.getAttribute('data-mce-placeholder')) {
 			data = {
 				src: dom.getAttrib(imgElm, 'src'),
 				alt: dom.getAttrib(imgElm, 'alt'),
@@ -136,10 +203,10 @@ tinymce.PluginManager.add('image', function(editor) {
 
 		if (imageList) {
 			imageListCtrl = {
-				name: 'target',
 				type: 'listbox',
 				label: 'Image list',
 				values: buildImageList(),
+				value: data.src && editor.convertURL(data.src, 'src'),
 				onselect: function(e) {
 					var altCtrl = win.find('#alt');
 
@@ -148,13 +215,16 @@ tinymce.PluginManager.add('image', function(editor) {
 					}
 
 					win.find('#src').value(e.control.value());
+				},
+				onPostRender: function() {
+					imageListCtrl = this;
 				}
 			};
 		}
 
 		// General settings shared between simple and advanced dialogs
 		var generalFormItems = [
-			{name: 'src', type: 'filepicker', filetype: 'image', label: 'Source', autofocus: true},
+			{name: 'src', type: 'filepicker', filetype: 'image', label: 'Source', autofocus: true, onchange: srcChange},
 			imageListCtrl,
 			{name: 'alt', type: 'textbox', label: 'Image description'},
 			{
@@ -204,7 +274,7 @@ tinymce.PluginManager.add('image', function(editor) {
 
 			// Advanced dialog shows general+advanced tabs
 			win = editor.windowManager.open({
-				title: 'Edit image',
+				title: 'Insert/edit image',
 				data: data,
 				bodyType: 'tabpanel',
 				body: [
@@ -250,7 +320,7 @@ tinymce.PluginManager.add('image', function(editor) {
 		} else {
 			// Simple default dialog
 			win = editor.windowManager.open({
-				title: 'Edit image',
+				title: 'Insert/edit image',
 				data: data,
 				body: generalFormItems,
 				onSubmit: onSubmitForm
@@ -262,7 +332,7 @@ tinymce.PluginManager.add('image', function(editor) {
 		icon: 'image',
 		tooltip: 'Insert/edit image',
 		onclick: createImageList(showDialog),
-		stateSelector: 'img:not([data-mce-object])'
+		stateSelector: 'img:not([data-mce-object],[data-mce-placeholder])'
 	});
 
 	editor.addMenuItem('image', {
