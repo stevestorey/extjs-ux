@@ -15,27 +15,58 @@
  */
 define("tinymce/UndoManager", [
 	"tinymce/Env",
-	"tinymce/util/Tools"
-], function(Env, Tools) {
+	"tinymce/util/Tools",
+	"tinymce/html/SaxParser"
+], function(Env, Tools, SaxParser) {
 	var trim = Tools.trim, trimContentRegExp;
 
 	trimContentRegExp = new RegExp([
 		'<span[^>]+data-mce-bogus[^>]+>[\u200B\uFEFF]+<\\/span>', // Trim bogus spans like caret containers
-		'<div[^>]+data-mce-bogus[^>]+><\\/div>', // Trim bogus divs like resize handles
 		'\\s?data-mce-selected="[^"]+"' // Trim temporaty data-mce prefixed attributes like data-mce-selected
 	].join('|'), 'gi');
 
 	return function(editor) {
-		var self, index = 0, data = [], beforeBookmark, isFirstTypedCharacter, lock;
+		var self = this, index = 0, data = [], beforeBookmark, isFirstTypedCharacter, locks = 0;
 
-		// Returns a trimmed version of the current editor contents
+		/**
+		 * Returns a trimmed version of the editor contents to be used for the undo level. This
+		 * will remove any data-mce-bogus="all" marked elements since these are used for UI it will also
+		 * remove the data-mce-selected attributes used for selection of objects and caret containers.
+		 * It will keep all data-mce-bogus="1" elements since these can be used to place the caret etc and will
+		 * be removed by the serialization logic when you save.
+		 *
+		 * @private
+		 * @return {String} HTML contents of the editor excluding some internal bogus elements.
+		 */
 		function getContent() {
-			return trim(editor.getContent({format: 'raw', no_events: 1}).replace(trimContentRegExp, ''));
+			var content = trim(editor.getContent({format: 'raw', no_events: 1}));
+			var bogusAllRegExp = /<(\w+) [^>]*data-mce-bogus="all"[^>]*>/g;
+			var endTagIndex, index, matchLength, matches, shortEndedElements, schema = editor.schema;
+
+			content = content.replace(trimContentRegExp, '');
+			shortEndedElements = schema.getShortEndedElements();
+
+			// Remove all bogus elements marked with "all"
+			while ((matches = bogusAllRegExp.exec(content))) {
+				index = bogusAllRegExp.lastIndex;
+				matchLength = matches[0].length;
+
+				if (shortEndedElements[matches[1]]) {
+					endTagIndex = index;
+				} else {
+					endTagIndex = SaxParser.findEndTag(schema, content, index);
+				}
+
+				content = content.substring(0, index - matchLength) + content.substring(endTagIndex);
+				bogusAllRegExp.lastIndex = index - matchLength;
+			}
+
+			return content;
 		}
 
-		function addNonTypingUndoLevel() {
+		function addNonTypingUndoLevel(e) {
 			self.typing = false;
-			self.add();
+			self.add({}, e);
 		}
 
 		// Add initial undo level when the editor is initialized
@@ -57,7 +88,7 @@ define("tinymce/UndoManager", [
 			var cmd = e.command;
 
 			if (cmd != 'Undo' && cmd != 'Redo' && cmd != 'mceRepaint') {
-				self.add();
+				addNonTypingUndoLevel(e);
 			}
 		});
 
@@ -65,13 +96,8 @@ define("tinymce/UndoManager", [
 			self.beforeChange();
 		});
 
-		editor.on('SaveContent ObjectResized', addNonTypingUndoLevel);
-		editor.dom.bind(editor.dom.getRoot(), 'dragend', addNonTypingUndoLevel);
-		editor.dom.bind(editor.getBody(), 'focusout', function() {
-			if (!editor.removed && self.typing) {
-				addNonTypingUndoLevel();
-			}
-		});
+		editor.on('SaveContent ObjectResized blur', addNonTypingUndoLevel);
+		editor.on('DragEnd', addNonTypingUndoLevel);
 
 		editor.on('KeyUp', function(e) {
 			var keyCode = e.keyCode;
@@ -109,7 +135,7 @@ define("tinymce/UndoManager", [
 			// Is caracter positon keys left,right,up,down,home,end,pgdown,pgup,enter
 			if ((keyCode >= 33 && keyCode <= 36) || (keyCode >= 37 && keyCode <= 40) || keyCode == 45) {
 				if (self.typing) {
-					addNonTypingUndoLevel();
+					addNonTypingUndoLevel(e);
 				}
 
 				return;
@@ -119,14 +145,14 @@ define("tinymce/UndoManager", [
 			if ((keyCode < 16 || keyCode > 20) && keyCode != 224 && keyCode != 91 && !self.typing) {
 				self.beforeChange();
 				self.typing = true;
-				self.add();
+				self.add({}, e);
 				isFirstTypedCharacter = true;
 			}
 		});
 
-		editor.on('MouseDown', function() {
+		editor.on('MouseDown', function(e) {
 			if (self.typing) {
-				addNonTypingUndoLevel();
+				addNonTypingUndoLevel(e);
 			}
 		});
 
@@ -134,11 +160,43 @@ define("tinymce/UndoManager", [
 		editor.addShortcut('ctrl+z', '', 'Undo');
 		editor.addShortcut('ctrl+y,ctrl+shift+z', '', 'Redo');
 
-		editor.on('AddUndo Undo Redo ClearUndos MouseUp', function(e) {
+		editor.on('AddUndo Undo Redo ClearUndos', function(e) {
 			if (!e.isDefaultPrevented()) {
 				editor.nodeChanged();
 			}
 		});
+
+		// Selection range isn't updated until after the click events default handler is executed
+		// so we need to wait for the selection to update on Gecko/WebKit it happens right away.
+		// On IE it might take a while so we listen for the SelectionChange event.
+		//
+		// We can't use the SelectionChange on all browsers event since Gecko doesn't support that.
+		if (Env.ie) {
+			editor.on('MouseUp', function(e) {
+				if (!e.isDefaultPrevented()) {
+					editor.once('SelectionChange', function() {
+						// Selection change might fire when focus is lost
+						if (editor.dom.isChildOf(editor.selection.getStart(), editor.getBody())) {
+							editor.nodeChanged();
+						}
+					});
+
+					editor.nodeChanged();
+				}
+			});
+		} else {
+			editor.on('MouseUp', function() {
+				editor.nodeChanged();
+			});
+
+			editor.on('Click', function(e) {
+				if (!e.isDefaultPrevented()) {
+					setTimeout(function() {
+						editor.nodeChanged();
+					}, 0);
+				}
+			});
+		}
 
 		self = {
 			// Explose for debugging reasons
@@ -159,7 +217,7 @@ define("tinymce/UndoManager", [
 			 * @method beforeChange
 			 */
 			beforeChange: function() {
-				if (!lock) {
+				if (!locks) {
 					beforeBookmark = editor.selection.getBookmark(2, true);
 				}
 			},
@@ -168,21 +226,26 @@ define("tinymce/UndoManager", [
 			 * Adds a new undo level/snapshot to the undo list.
 			 *
 			 * @method add
-			 * @param {Object} l Optional undo level object to add.
+			 * @param {Object} level Optional undo level object to add.
+			 * @param {DOMEvent} Event Optional event responsible for the creation of the undo level.
 			 * @return {Object} Undo level that got added or null it a level wasn't needed.
 			 */
-			add: function(level) {
+			add: function(level, event) {
 				var i, settings = editor.settings, lastLevel;
 
 				level = level || {};
 				level.content = getContent();
 
-				if (lock || editor.fire('BeforeAddUndo', {level: level}).isDefaultPrevented()) {
+				if (locks || editor.removed) {
+					return null;
+				}
+
+				lastLevel = data[index];
+				if (editor.fire('BeforeAddUndo', {level: level, lastLevel: lastLevel, originalEvent: event}).isDefaultPrevented()) {
 					return null;
 				}
 
 				// Add undo level if needed
-				lastLevel = data[index];
 				if (lastLevel && lastLevel.content == level.content) {
 					return null;
 				}
@@ -215,13 +278,13 @@ define("tinymce/UndoManager", [
 				data.push(level);
 				index = data.length - 1;
 
-				var args = {level: level, lastLevel: lastLevel};
+				var args = {level: level, lastLevel: lastLevel, originalEvent: event};
 
 				editor.fire('AddUndo', args);
 
 				if (index > 0) {
-					editor.fire('change', args);
 					editor.isNotDirty = false;
+					editor.fire('change', args);
 				}
 
 				return level;
@@ -324,9 +387,12 @@ define("tinymce/UndoManager", [
 			transact: function(callback) {
 				self.beforeChange();
 
-				lock = true;
-				callback();
-				lock = false;
+				try {
+					locks++;
+					callback();
+				} finally {
+					locks--;
+				}
 
 				self.add();
 			}

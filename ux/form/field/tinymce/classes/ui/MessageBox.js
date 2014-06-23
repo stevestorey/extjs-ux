@@ -11,8 +11,8 @@
 /**
  * This class is used to create MessageBoxes like alerts/confirms etc.
  *
- * @class tinymce.ui.Window
- * @extends tinymce.ui.FloatPanel
+ * @class tinymce.ui.MessageBox
+ * @extends tinymce.ui.Window
  */
 define("tinymce/ui/MessageBox", [
 	"tinymce/ui/Window"
@@ -147,6 +147,7 @@ define("tinymce/ui/MessageBox", [
 					align: "center",
 					buttons: buttons,
 					title: settings.title,
+					role: 'alertdialog',
 					items: {
 						type: "label",
 						multiline: true,
@@ -154,7 +155,13 @@ define("tinymce/ui/MessageBox", [
 						maxHeight: 200,
 						text: settings.text
 					},
-					onClose: settings.onClose
+					onPostRender: function() {
+						this.aria('describedby', this.items()[0]._id);
+					},
+					onClose: settings.onClose,
+					onCancel: function() {
+						callback(false);
+					}
 				}).renderTo(document.body).reflow();
 			},
 

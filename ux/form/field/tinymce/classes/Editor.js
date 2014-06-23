@@ -42,6 +42,7 @@
  */
 define("tinymce/Editor", [
 	"tinymce/dom/DOMUtils",
+	"tinymce/dom/DomQuery",
 	"tinymce/AddOnManager",
 	"tinymce/html/Node",
 	"tinymce/dom/Serializer",
@@ -61,13 +62,13 @@ define("tinymce/Editor", [
 	"tinymce/util/Quirks",
 	"tinymce/Env",
 	"tinymce/util/Tools",
-	"tinymce/util/Observable",
+	"tinymce/EditorObservable",
 	"tinymce/Shortcuts"
 ], function(
-	DOMUtils, AddOnManager, Node, DomSerializer, Serializer,
+	DOMUtils, DomQuery, AddOnManager, Node, DomSerializer, Serializer,
 	Selection, Formatter, UndoManager, EnterKey, ForceBlocks, EditorCommands,
 	URI, ScriptLoader, EventUtils, WindowManager,
-	Schema, DomParser, Quirks, Env, Tools, Observable, Shortcuts
+	Schema, DomParser, Quirks, Env, Tools, EditorObservable, Shortcuts
 ) {
 	// Shorten these names
 	var DOM = DOMUtils.DOM, ThemeManager = AddOnManager.ThemeManager, PluginManager = AddOnManager.PluginManager;
@@ -75,20 +76,6 @@ define("tinymce/Editor", [
 	var inArray = Tools.inArray, trim = Tools.trim, resolve = Tools.resolve;
 	var Event = EventUtils.Event;
 	var isGecko = Env.gecko, ie = Env.ie;
-
-	function getEventTarget(editor, eventName) {
-		if (eventName == 'selectionchange' || eventName == 'drop') {
-			return editor.getDoc();
-		}
-
-		// Need to bind mousedown/mouseup etc to document not body in iframe mode
-		// Since the user might click on the HTML element not the BODY
-		if (!editor.inline && /^mouse|click|contextmenu/.test(eventName)) {
-			return editor.getDoc();
-		}
-
-		return editor.getBody();
-	}
 
 	/**
 	 * Include documentation for all the events.
@@ -262,8 +249,24 @@ define("tinymce/Editor", [
 		self.inline = settings.inline;
 
 		// Call setup
-		self.execCallback('setup', self);
 		editorManager.fire('SetupEditor', self);
+		self.execCallback('setup', self);
+
+		/**
+		 * Dom query instance with default scope to the editor document and default element is the body of the editor.
+		 *
+		 * @property $
+		 * @type tinymce.dom.DomQuery
+		 * @example
+		 * tinymce.activeEditor.$('p').css('color', 'red');
+		 * tinymce.activeEditor.$().append('<p>new</p>');
+		 */
+		self.$ = DomQuery.overrideDefaults(function() {
+			return {
+				context: self.inline ? self.getBody() : self.getDoc(),
+				element: self.getBody()
+			};
+		});
 	}
 
 	Editor.prototype = {
@@ -389,7 +392,7 @@ define("tinymce/Editor", [
 			function loadScripts() {
 				var scriptLoader = ScriptLoader.ScriptLoader;
 
-				if (settings.language && settings.language != 'en') {
+				if (settings.language && settings.language != 'en' && !settings.language_url) {
 					settings.language_url = self.editorManager.baseURL + '/langs/' + settings.language + '.js';
 				}
 
@@ -430,9 +433,9 @@ define("tinymce/Editor", [
 
 							each(dependencies, function(dep) {
 								var defaultSettings = {
-									prefix:'plugins/',
+									prefix: 'plugins/',
 									resource: dep,
-									suffix:'/plugin' + suffix + '.js'
+									suffix: '/plugin' + suffix + '.js'
 								};
 
 								dep = PluginManager.createUrl(defaultSettings, dep);
@@ -467,7 +470,7 @@ define("tinymce/Editor", [
 		 */
 		init: function() {
 			var self = this, settings = self.settings, elm = self.getElement();
-			var w, h, minHeight, n, o, url, bodyId, bodyClass, re, i, initializedPlugins = [];
+			var w, h, minHeight, n, o, Theme, url, bodyId, bodyClass, re, i, initializedPlugins = [];
 
 			self.rtl = this.editorManager.i18n.rtl;
 			self.editorManager.add(self);
@@ -486,11 +489,11 @@ define("tinymce/Editor", [
 			if (settings.theme) {
 				if (typeof settings.theme != "function") {
 					settings.theme = settings.theme.replace(/-/, '');
-					o = ThemeManager.get(settings.theme);
-					self.theme = new o(self, ThemeManager.urls[settings.theme]);
+					Theme = ThemeManager.get(settings.theme);
+					self.theme = new Theme(self, ThemeManager.urls[settings.theme]);
 
 					if (self.theme.init) {
-						self.theme.init(self, ThemeManager.urls[settings.theme] || self.documentBaseUrl.replace(/\/$/, ''));
+						self.theme.init(self, ThemeManager.urls[settings.theme] || self.documentBaseUrl.replace(/\/$/, ''), self.$);
 					}
 				} else {
 					self.theme = settings.theme;
@@ -498,21 +501,21 @@ define("tinymce/Editor", [
 			}
 
 			function initPlugin(plugin) {
-				var constr = PluginManager.get(plugin), url, pluginInstance;
+				var Plugin = PluginManager.get(plugin), pluginUrl, pluginInstance;
 
-				url = PluginManager.urls[plugin] || self.documentBaseUrl.replace(/\/$/, '');
+				pluginUrl = PluginManager.urls[plugin] || self.documentBaseUrl.replace(/\/$/, '');
 				plugin = trim(plugin);
-				if (constr && inArray(initializedPlugins, plugin) === -1) {
-					each(PluginManager.dependencies(plugin), function(dep){
+				if (Plugin && inArray(initializedPlugins, plugin) === -1) {
+					each(PluginManager.dependencies(plugin), function(dep) {
 						initPlugin(dep);
 					});
 
-					pluginInstance = new constr(self, url);
+					pluginInstance = new Plugin(self, pluginUrl, self.$);
 
 					self.plugins[plugin] = pluginInstance;
 
 					if (pluginInstance.init) {
-						pluginInstance.init(self, url);
+						pluginInstance.init(self, pluginUrl);
 						initializedPlugins.push(plugin);
 					}
 				}
@@ -532,11 +535,11 @@ define("tinymce/Editor", [
 					re = /^[0-9\.]+(|px)$/i;
 
 					if (re.test('' + w)) {
-						w = Math.max(parseInt(w, 10) + (o.deltaWidth || 0), 100);
+						w = Math.max(parseInt(w, 10), 100);
 					}
 
 					if (re.test('' + h)) {
-						h = Math.max(parseInt(h, 10) + (o.deltaHeight || 0), minHeight);
+						h = Math.max(parseInt(h, 10), minHeight);
 					}
 
 					// Render UI
@@ -636,7 +639,8 @@ define("tinymce/Editor", [
 			self.iframeHTML += '</head><body id="' + bodyId + '" class="mce-content-body ' + bodyClass + '" ' +
 				'onload="window.parent.tinymce.get(\'' + self.id + '\').fire(\'load\');"><br></body></html>';
 
-			var domainRelaxUrl = 'javascript:(function(){'+
+			/*eslint no-script-url:0 */
+			var domainRelaxUrl = 'javascript:(function(){' +
 				'document.open();document.domain="' + document.domain + '";' +
 				'var ed = window.parent.tinymce.get("' + self.id + '");document.write(ed.iframeHTML);' +
 				'document.close();ed.initContentBody(true);})()';
@@ -714,16 +718,14 @@ define("tinymce/Editor", [
 
 			if (settings.content_editable) {
 				self.on('remove', function() {
-					var body = this.getBody();
+					var bodyEl = this.getBody();
 
-					DOM.removeClass(body, 'mce-content-body');
-					DOM.removeClass(body, 'mce-edit-focus');
-					DOM.setAttrib(body, 'tabIndex', null);
-					DOM.setAttrib(body, 'contentEditable', null);
+					DOM.removeClass(bodyEl, 'mce-content-body');
+					DOM.removeClass(bodyEl, 'mce-edit-focus');
+					DOM.setAttrib(bodyEl, 'contentEditable', null);
 				});
 
 				DOM.addClass(targetElm, 'mce-content-body');
-				targetElm.tabIndex = -1;
 				self.contentDocument = doc = settings.content_document || document;
 				self.contentWindow = settings.content_window || window;
 				self.bodyElement = targetElm;
@@ -790,7 +792,7 @@ define("tinymce/Editor", [
 			self.parser = new DomParser(settings, self.schema);
 
 			// Convert src and href into data-mce-src, data-mce-href and data-mce-style
-			self.parser.addAttributeFilter('src,href,style', function(nodes, name) {
+			self.parser.addAttributeFilter('src,href,style,tabindex', function(nodes, name) {
 				var i = nodes.length, node, dom = self.dom, value, internalName;
 
 				while (i--) {
@@ -801,7 +803,17 @@ define("tinymce/Editor", [
 					// Add internal attribute if we need to we don't on a refresh of the document
 					if (!node.attributes.map[internalName]) {
 						if (name === "style") {
-							node.attr(internalName, dom.serializeStyle(dom.parseStyle(value), node.name));
+							value = dom.serializeStyle(dom.parseStyle(value), node.name);
+
+							if (!value.length) {
+								value = null;
+							}
+
+							node.attr(internalName, value);
+							node.attr(name, value);
+						} else if (name === "tabindex") {
+							node.attr(internalName, value);
+							node.attr(name, null);
 						} else {
 							node.attr(internalName, self.convertURL(value, name, node.name));
 						}
@@ -815,7 +827,7 @@ define("tinymce/Editor", [
 
 				while (i--) {
 					node = nodes[i];
-					node.attr('type', 'mce-' + (node.attr('type') || 'text/javascript'));
+					node.attr('type', 'mce-' + (node.attr('type') || 'no/type'));
 				}
 			});
 
@@ -947,12 +959,7 @@ define("tinymce/Editor", [
 			 * }
 			 */
 			self.initialized = true;
-
-			each(self._pendingNativeEvents, function(name) {
-				self.dom.bind(getEventTarget(self, name), name, function(e) {
-					self.fire(e.type, e);
-				});
-			});
+			self.bindPendingEventDelegates();
 
 			self.fire('init');
 			self.focus(true);
@@ -980,7 +987,7 @@ define("tinymce/Editor", [
 
 			// Handle auto focus
 			if (settings.auto_focus) {
-				setTimeout(function () {
+				setTimeout(function() {
 					var ed = self.editorManager.get(settings.auto_focus);
 
 					ed.selection.select(ed.getBody(), 1);
@@ -1030,8 +1037,13 @@ define("tinymce/Editor", [
 					body = self.getBody();
 
 					// Check for setActive since it doesn't scroll to the element
-					if (body.setActive && Env.ie < 11) {
-						body.setActive();
+					if (body.setActive) {
+						// IE 11 sometimes throws "Invalid function" then fallback to focus
+						try {
+							body.setActive();
+						} catch (ex) {
+							body.focus();
+						}
 					} else {
 						body.focus();
 					}
@@ -1174,12 +1186,13 @@ define("tinymce/Editor", [
 		 * need to update the UI states or element path etc.
 		 *
 		 * @method nodeChanged
+		 * @param {Object} args Optional args to pass to NodeChange event handlers.
 		 */
-		nodeChanged: function() {
+		nodeChanged: function(args) {
 			var self = this, selection = self.selection, node, parents, root;
 
 			// Fix for bug #1896577 it seems that this can not be fired while the editor is loading
-			if (self.initialized && !self.settings.disable_nodechange) {
+			if (self.initialized && !self.settings.disable_nodechange && !self.settings.readonly) {
 				// Get start node
 				root = self.getBody();
 				node = selection.getStart() || root;
@@ -1200,14 +1213,16 @@ define("tinymce/Editor", [
 					parents.push(node);
 				});
 
-				self.fire('NodeChange', {element: node, parents: parents});
+				args = args || {};
+				args.element = node;
+				args.parents = parents;
+
+				self.fire('NodeChange', args);
 			}
 		},
 
 		/**
-		 * Adds a button that later gets created by the ControlManager. This is a shorter and easier method
-		 * of adding buttons without the need to deal with the ControlManager directly. But it's also less
-		 * powerfull if you need more control use the ControlManagers factory methods instead.
+		 * Adds a button that later gets created by the theme in the editors toolbars.
 		 *
 		 * @method addButton
 		 * @param {String} name Button name to add.
@@ -1249,7 +1264,9 @@ define("tinymce/Editor", [
 		},
 
 		/**
-		 * Adds a menu item to be used in the menus of the modern theme.
+		 * Adds a menu item to be used in the menus of the theme. There might be multiple instances
+		 * of this menu item for example it might be used in the main menus of the theme but also in
+		 * the context menu so make sure that it's self contained and supports multiple instances.
 		 *
 		 * @method addMenuItem
 		 * @param {String} name Menu item name to add.
@@ -1262,7 +1279,7 @@ define("tinymce/Editor", [
 		 *
 		 *    setup: function(ed) {
 		 *       ed.addMenuItem('example', {
-		 *          title: 'My menu item',
+		 *          text: 'My menu item',
 		 *          context: 'tools',
 		 *          onclick: function() {
 		 *             ed.insertContent('Hello world!!');
@@ -1429,8 +1446,18 @@ define("tinymce/Editor", [
 			}
 
 			// Browser commands
-			self.getDoc().execCommand(cmd, ui, value);
-			self.fire('ExecCommand', {command: cmd, ui: ui, value: value});
+			try {
+				state = self.getDoc().execCommand(cmd, ui, value);
+			} catch (ex) {
+				// Ignore old IE errors
+			}
+
+			if (state) {
+				self.fire('ExecCommand', {command: cmd, ui: ui, value: value});
+				return true;
+			}
+
+			return false;
 		},
 
 		/**
@@ -1452,8 +1479,8 @@ define("tinymce/Editor", [
 			if ((queryItem = self.queryStateCommands[cmd])) {
 				returnVal = queryItem.func.call(queryItem.scope);
 
-				// Fall though on true
-				if (returnVal !== true) {
+				// Fall though on non boolean returns
+				if (returnVal === true || returnVal === false) {
 					return returnVal;
 				}
 			}
@@ -1519,10 +1546,19 @@ define("tinymce/Editor", [
 		show: function() {
 			var self = this;
 
-			DOM.show(self.getContainer());
-			DOM.hide(self.id);
-			self.load();
-			self.fire('show');
+			if (self.hidden) {
+				self.hidden = false;
+
+				if (self.inline) {
+					self.getBody().contentEditable = true;
+				} else {
+					DOM.show(self.getContainer());
+					DOM.hide(self.id);
+				}
+
+				self.load();
+				self.fire('show');
+			}
 		},
 
 		/**
@@ -1533,18 +1569,30 @@ define("tinymce/Editor", [
 		hide: function() {
 			var self = this, doc = self.getDoc();
 
-			// Fixed bug where IE has a blinking cursor left from the editor
-			if (ie && doc && !self.inline) {
-				doc.execCommand('SelectAll');
+			if (!self.hidden) {
+				// Fixed bug where IE has a blinking cursor left from the editor
+				if (ie && doc && !self.inline) {
+					doc.execCommand('SelectAll');
+				}
+
+				// We must save before we hide so Safari doesn't crash
+				self.save();
+
+				if (self.inline) {
+					self.getBody().contentEditable = false;
+
+					// Make sure the editor gets blurred
+					if (self == self.editorManager.focusedEditor) {
+						self.editorManager.focusedEditor = null;
+					}
+				} else {
+					DOM.hide(self.getContainer());
+					DOM.setStyle(self.id, 'display', self.orgDisplay);
+				}
+
+				self.hidden = true;
+				self.fire('hide');
 			}
-
-			// We must save before we hide so Safari doesn't crash
-			self.save();
-
-			// defer the call to hide to prevent an IE9 crash #4921
-			DOM.hide(self.getContainer());
-			DOM.setStyle(self.id, 'display', self.orgDisplay);
-			self.fire('hide');
 		},
 
 		/**
@@ -1554,7 +1602,7 @@ define("tinymce/Editor", [
 		 * @return {Boolean} True/false if the editor is hidden or not.
 		 */
 		isHidden: function() {
-			return !DOM.isHidden(this.id);
+			return !!this.hidden;
 		},
 
 		/**
@@ -1568,10 +1616,10 @@ define("tinymce/Editor", [
 		 * @example
 		 * // Show progress for the active editor
 		 * tinymce.activeEditor.setProgressState(true);
-		 * 
+		 *
 		 * // Hide progress for the active editor
 		 * tinymce.activeEditor.setProgressState(false);
-		 * 
+		 *
 		 * // Show progress after 3 seconds
 		 * tinymce.activeEditor.setProgressState(true, 3000);
 		 */
@@ -1637,7 +1685,10 @@ define("tinymce/Editor", [
 			html = args.content;
 
 			if (!/TEXTAREA|INPUT/i.test(elm.nodeName)) {
-				elm.innerHTML = html;
+				// Update DIV element when not in inline mode
+				if (!self.inline) {
+					elm.innerHTML = html;
+				}
 
 				// Update hidden form element
 				if ((form = DOM.getParent(self.id, 'form'))) {
@@ -1708,7 +1759,7 @@ define("tinymce/Editor", [
 					// Padd with bogus BR elements on modern browsers and IE 7 and 8 since they don't render empty P tags properly
 					content = ie && ie < 11 ? '' : '<br data-mce-bogus="1">';
 					content = self.dom.createHTML(forcedRootBlockName, self.settings.forced_root_block_attrs, content);
-				} else if (!ie || ie < 11) {
+				} else if (!ie) {
 					// We need to add a BR when forced_root_block is disabled on non IE browsers to place the caret
 					content = '<br data-mce-bogus="1">';
 				}
@@ -1803,8 +1854,13 @@ define("tinymce/Editor", [
 		 *
 		 * @method insertContent
 		 * @param {String} content Content to insert.
+		 * @param {Object} args Optional args to pass to insert call.
 		 */
-		insertContent: function(content) {
+		insertContent: function(content, args) {
+			if (args) {
+				content = extend({content: content}, args);
+			}
+
 			this.execCommand('mceInsertContent', false, content);
 		},
 
@@ -1980,7 +2036,7 @@ define("tinymce/Editor", [
 					case 'A':
 						if (!dom.getAttrib(elm, 'href', false)) {
 							value = dom.getAttrib(elm, 'name') || elm.id;
-							cls = 'mce-item-anchor';
+							cls = settings.visual_anchor_class || 'mce-item-anchor';
 
 							if (value) {
 								if (self.hasVisual) {
@@ -2007,27 +2063,26 @@ define("tinymce/Editor", [
 			var self = this;
 
 			if (!self.removed) {
-				self.removed = 1; // Cancels post remove event execution
+				self.save();
+				self.removed = 1;
 
 				// Remove any hidden input
 				if (self.hasHiddenInput) {
 					DOM.remove(self.getElement().nextSibling);
 				}
 
-				// Fixed bug where IE has a blinking cursor left from the editor
-				var doc = self.getDoc();
-				if (ie && doc && !self.inline) {
-					doc.execCommand('SelectAll');
-				}
+				if (!self.inline) {
+					// IE 9 has a bug where the selection stops working if you place the
+					// caret inside the editor then remove the iframe
+					if (ie && ie < 10) {
+						self.getDoc().execCommand('SelectAll', false, null);
+					}
 
-				// We must save before we hide so Safari doesn't crash
-				self.save();
+					DOM.setStyle(self.id, 'display', self.orgDisplay);
+					self.getBody().onload = null; // Prevent #6816
 
-				DOM.setStyle(self.id, 'display', self.orgDisplay);
-
-				// Don't clear the window or document if content editable
-				// is enabled since other instances might still be present
-				if (!self.settings.content_editable) {
+					// Don't clear the window or document if content editable
+					// is enabled since other instances might still be present
 					Event.unbind(self.getWin());
 					Event.unbind(self.getDoc());
 				}
@@ -2041,34 +2096,6 @@ define("tinymce/Editor", [
 				self.editorManager.remove(self);
 				DOM.remove(elm);
 				self.destroy();
-			}
-		},
-
-		bindNative: function(name) {
-			var self = this;
-
-			if (self.settings.readonly) {
-				return;
-			}
-
-			if (self.initialized) {
-				self.dom.bind(getEventTarget(self, name), name, function(e) {
-					self.fire(name, e);
-				});
-			} else {
-				if (!self._pendingNativeEvents) {
-					self._pendingNativeEvents = [name];
-				} else {
-					self._pendingNativeEvents.push(name);
-				}
-			}
-		},
-
-		unbindNative: function(name) {
-			var self = this;
-
-			if (self.initialized) {
-				self.dom.unbind(name);
 			}
 		},
 
@@ -2126,7 +2153,7 @@ define("tinymce/Editor", [
 				DOM.unbind(form, 'submit reset', self.formEventDelegate);
 			}
 
-			self.contentAreaContainer = self.formElement = self.container = null;
+			self.contentAreaContainer = self.formElement = self.container = self.editorContainer = null;
 			self.settings.content_element = self.bodyElement = self.contentDocument = self.contentWindow = null;
 
 			if (self.selection) {
@@ -2166,7 +2193,7 @@ define("tinymce/Editor", [
 		}
 	};
 
-	extend(Editor.prototype, Observable);
+	extend(Editor.prototype, EditorObservable);
 
 	return Editor;
 });

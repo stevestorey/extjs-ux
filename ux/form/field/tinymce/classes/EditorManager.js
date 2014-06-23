@@ -20,6 +20,7 @@
  */
 define("tinymce/EditorManager", [
 	"tinymce/Editor",
+	"tinymce/dom/DomQuery",
 	"tinymce/dom/DOMUtils",
 	"tinymce/util/URI",
 	"tinymce/Env",
@@ -27,19 +28,64 @@ define("tinymce/EditorManager", [
 	"tinymce/util/Observable",
 	"tinymce/util/I18n",
 	"tinymce/FocusManager"
-], function(Editor, DOMUtils, URI, Env, Tools, Observable, I18n, FocusManager) {
+], function(Editor, DomQuery, DOMUtils, URI, Env, Tools, Observable, I18n, FocusManager) {
 	var DOM = DOMUtils.DOM;
 	var explode = Tools.explode, each = Tools.each, extend = Tools.extend;
-	var instanceCounter = 0, beforeUnloadDelegate;
+	var instanceCounter = 0, beforeUnloadDelegate, EditorManager;
 
-	var EditorManager = {
+	function removeEditorFromList(editor) {
+		var editors = EditorManager.editors, removedFromList;
+
+		delete editors[editor.id];
+
+		for (var i = 0; i < editors.length; i++) {
+			if (editors[i] == editor) {
+				editors.splice(i, 1);
+				removedFromList = true;
+				break;
+			}
+		}
+
+		// Select another editor since the active one was removed
+		if (EditorManager.activeEditor == editor) {
+			EditorManager.activeEditor = editors[0];
+		}
+
+		// Clear focusedEditor if necessary, so that we don't try to blur the destroyed editor
+		if (EditorManager.focusedEditor == editor) {
+			EditorManager.focusedEditor = null;
+		}
+
+		return removedFromList;
+	}
+
+	function purgeDestroyedEditor(editor) {
+		// User has manually destroyed the editor lets clean up the mess
+		if (editor && !(editor.getContainer() || editor.getBody()).parentNode) {
+			removeEditorFromList(editor);
+			editor.destroy(true);
+			editor = null;
+		}
+
+		return editor;
+	}
+
+	EditorManager = {
+		/**
+		 * Dom query instance.
+		 *
+		 * @property $
+		 * @type tinymce.dom.DomQuery
+		 */
+		$: DomQuery,
+
 		/**
 		 * Major version of TinyMCE build.
 		 *
 		 * @property majorVersion
 		 * @type String
 		 */
-		majorVersion : '@@majorVersion@@',
+		majorVersion: '@@majorVersion@@',
 
 		/**
 		 * Minor version of TinyMCE build.
@@ -47,7 +93,7 @@ define("tinymce/EditorManager", [
 		 * @property minorVersion
 		 * @type String
 		 */
-		minorVersion : '@@minorVersion@@',
+		minorVersion: '@@minorVersion@@',
 
 		/**
 		 * Release date of TinyMCE build.
@@ -88,12 +134,19 @@ define("tinymce/EditorManager", [
 		activeEditor: null,
 
 		setup: function() {
-			var self = this, baseURL, documentBaseURL, suffix = "", preInit;
+			var self = this, baseURL, documentBaseURL, suffix = "", preInit, src;
 
 			// Get base URL for the current document
-			documentBaseURL = document.location.href.replace(/[\?#].*$/, '').replace(/[\/\\][^\/]+$/, '');
-			if (!/[\/\\]$/.test(documentBaseURL)) {
-				documentBaseURL += '/';
+			documentBaseURL = document.location.href;
+
+			// Check if the URL is a document based format like: http://site/dir/file and file:///
+			// leave other formats like applewebdata://... intact
+			if (/^[^:]+:\/\/\/?[^\/]+\//.test(documentBaseURL)) {
+				documentBaseURL = documentBaseURL.replace(/[\?#].*$/, '').replace(/[\/\\][^\/]+$/, '');
+
+				if (!/[\/\\]$/.test(documentBaseURL)) {
+					documentBaseURL += '/';
+				}
 			}
 
 			// If tinymce is defined and has a base use that or use the old tinyMCEPreInit
@@ -105,7 +158,7 @@ define("tinymce/EditorManager", [
 				// Get base where the tinymce script is located
 				var scripts = document.getElementsByTagName('script');
 				for (var i = 0; i < scripts.length; i++) {
-					var src = scripts[i].src;
+					src = scripts[i].src;
 
 					// Script types supported:
 					// tinymce.js tinymce.min.js tinymce.dev.js
@@ -119,6 +172,18 @@ define("tinymce/EditorManager", [
 						baseURL = src.substring(0, src.lastIndexOf('/'));
 						break;
 					}
+				}
+
+				// We didn't find any baseURL by looking at the script elements
+				// Try to use the document.currentScript as a fallback
+				if (!baseURL && document.currentScript) {
+					src = document.currentScript.src;
+
+					if (src.indexOf('.min') != -1) {
+						suffix = '.min';
+					}
+
+					baseURL = src.substring(0, src.lastIndexOf('/'));
 				}
 			}
 
@@ -196,6 +261,14 @@ define("tinymce/EditorManager", [
 				return id;
 			}
 
+			function createEditor(id, settings) {
+				if (!purgeDestroyedEditor(self.get(id))) {
+					var editor = new Editor(id, settings, self);
+					editors.push(editor);
+					editor.render();
+				}
+			}
+
 			function execCallback(se, n, s) {
 				var f = se[n];
 
@@ -221,9 +294,7 @@ define("tinymce/EditorManager", [
 					// Process type specific selector
 					each(settings.types, function(type) {
 						each(DOM.select(type.selector), function(elm) {
-							var editor = new Editor(createId(elm), extend({}, settings, type), self);
-							editors.push(editor);
-							editor.render(1);
+							createEditor(createId(elm), extend({}, settings, type));
 						});
 					});
 
@@ -231,9 +302,7 @@ define("tinymce/EditorManager", [
 				} else if (settings.selector) {
 					// Process global selector
 					each(DOM.select(settings.selector), function(elm) {
-						var editor = new Editor(createId(elm), settings, self);
-						editors.push(editor);
-						editor.render(1);
+						createEditor(createId(elm), settings);
 					});
 
 					return;
@@ -244,22 +313,19 @@ define("tinymce/EditorManager", [
 					case "exact":
 						l = settings.elements || '';
 
-						if(l.length > 0) {
+						if (l.length > 0) {
 							each(explode(l), function(v) {
 								if (DOM.get(v)) {
 									editor = new Editor(v, settings, self);
 									editors.push(editor);
-									editor.render(true);
+									editor.render();
 								} else {
 									each(document.forms, function(f) {
 										each(f.elements, function(e) {
 											if (e.name === v) {
 												v = 'mce_editor_' + instanceCounter++;
 												DOM.setAttrib(e, 'id', v);
-
-												editor = new Editor(v, settings, self);
-												editors.push(editor);
-												editor.render(1);
+												createEditor(v, settings);
 											}
 										});
 									});
@@ -276,9 +342,7 @@ define("tinymce/EditorManager", [
 							}
 
 							if (!settings.editor_selector || hasClass(elm, settings.editor_selector)) {
-								editor = new Editor(createId(elm), settings, self);
-								editors.push(editor);
-								editor.render(true);
+								createEditor(createId(elm), settings);
 							}
 						});
 						break;
@@ -336,11 +400,11 @@ define("tinymce/EditorManager", [
 		 * });
 		 */
 		get: function(id) {
-			if (id === undefined) {
+			if (!arguments.length) {
 				return this.editors;
 			}
 
-			return this.editors[id];
+			return id in this.editors ? this.editors[id] : null;
 		},
 
 		/**
@@ -411,7 +475,7 @@ define("tinymce/EditorManager", [
 		 * @return {tinymce.Editor} The editor that got passed in will be return if it was found otherwise null.
 		 */
 		remove: function(selector) {
-			var self = this, i, editors = self.editors, editor, removedFromList;
+			var self = this, i, editors = self.editors, editor;
 
 			// Remove all editors
 			if (!selector) {
@@ -441,28 +505,13 @@ define("tinymce/EditorManager", [
 				return null;
 			}
 
-			delete editors[editor.id];
-
-			for (i = 0; i < editors.length; i++) {
-				if (editors[i] == editor) {
-					editors.splice(i, 1);
-					removedFromList = true;
-					break;
-				}
-			}
-
-			// Select another editor since the active one was removed
-			if (self.activeEditor == editor) {
-				self.activeEditor = editors[0];
-			}
-
 			/**
 			 * Fires when an editor is removed from EditorManager collection.
 			 *
 			 * @event RemoveEditor
 			 * @param {Object} e Event arguments.
 			 */
-			if (removedFromList) {
+			if (removeEditorFromList(editor)) {
 				self.fire('RemoveEditor', {editor: editor});
 			}
 
