@@ -141,7 +141,7 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
         var me = this,
             frameHeight = height - 2;
 
-        if (!me.editor || !me.rendered || me.edMenubar.getHeight() > 100) {
+        if (!me.editor || !me.rendered || !me.edMenubar || me.edMenubar.getHeight() > 100) {
             //Go around again, we're not quite ready yet
             Ext.Function.defer(function() {
                 me.setEditorSize(width, height);
