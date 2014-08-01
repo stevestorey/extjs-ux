@@ -13,8 +13,6 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
     extend: 'Ext.form.field.TextArea',
     alias: 'widget.tinymcefield',
 
-    requires: ['Ext.ux.form.field.TinyMCEWindowManager'],
-
     config: {
         height: 170
     },
@@ -112,11 +110,7 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
                 window.b = me.editor;
                 window.d = me;
 
-                /*editor.windowManager = new Ext.ux.form.field.TinyMCEWindowManager({
-                    editor: me.editor
-                });*/
-
-                me.tableEl = Ext.get(editor.getContainer());//Ext.get(me.editor.id + "_tbl");
+                me.tableEl = Ext.get(editor.getContainer());
                 me.iframeEl = Ext.get(me.editor.id + "_ifr");
 
                 me.edMenubar = me.tableEl.down(".mce-menubar");
@@ -126,10 +120,7 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
                 /*if (me.hideBorder)
                     me.tableEl.setStyle('border', '0px');*/
 
-                Ext.Function.defer(function() {
-                    me.setEditorSize(me.lastWidth, me.lastHeight);
-                }, 10, me);
-
+                me.setEditorSize(me.lastWidth, me.lastHeight);
                 me.fireEvent('editorcreated', me.editor, me);
             });
         };
@@ -141,14 +132,13 @@ Ext.define("Ext.ux.form.field.TinyMCE", {
         var me = this,
             frameHeight = height - 2;
 
-        if (!me.editor || !me.rendered || !me.edMenubar || me.edMenubar.getHeight() > 100) {
+        if (!me.editor || !me.rendered || !me.edToolbar || me.edToolbar.getHeight() > 100) {
             //Go around again, we're not quite ready yet
             Ext.Function.defer(function() {
                 me.setEditorSize(width, height);
             }, 10, me);
             return;
         }
-
         if (me.edMenubar)
             frameHeight -= me.edMenubar.getHeight();
 
